@@ -30,7 +30,6 @@ func main() {
 
 func handleNewScreenshot(w http.ResponseWriter, r *http.Request)  {
 	   
-
     type ScreenshotRequest struct {
         Id string `json:"id"`
         Url string  `json:"url"`
@@ -45,7 +44,12 @@ func handleNewScreenshot(w http.ResponseWriter, r *http.Request)  {
         return
     }
 
-    updateAirtableListingRecord(createAirtableMediaRecord(uploadToS3(downloadScreenshot(generateScreenshotUrl(screenshotRequest.Url)))), screenshotRequest.Id)
+    updateAirtableListingRecord(
+        createAirtableMediaRecord(
+            uploadToS3(
+                downloadScreenshot(
+                    generateScreenshotUrl(screenshotRequest.Url)))), 
+    screenshotRequest.Id)
                
 }
 
@@ -58,8 +62,7 @@ func generateScreenshotUrl(websiteUrl string) string {
     hash := fmt.Sprintf("%x", md5.Sum([]byte(SECRET + params)))
     result_img_url := fmt.Sprintf("%s%s/%s/image?%s", API_URL, API_KEY, hash, params) 
     
-    return result_img_url
-    
+    return result_img_url  
 }
 
 func downloadScreenshot(screenshotUrl string) *os.File {
@@ -80,11 +83,9 @@ func downloadScreenshot(screenshotUrl string) *os.File {
         log.Fatal(err)
     }
     return file
-
 }
 
 // S3PutObjectAPI defines the interface for the PutObject function.
-// We use this interface to test the function using a mocked service.
 type S3PutObjectAPI interface {
 	PutObject(ctx context.Context,
 		params *s3.PutObjectInput,
@@ -138,34 +139,37 @@ func uploadToS3(file *os.File) string {
 
     defer os.Remove(file.Name()) // clean up
 
-    return fmt.Sprintf("File %s uploaded to S3 bucket %s\n with URL %s", filename, bucket, url)
+    fmt.Printf("File %s uploaded to S3 bucket %s\n with URL %s", filename, bucket, url)
 
+    return url
 }
 
 func createAirtableMediaRecord(s3URL string) string {
 
-    type AirtableAttachment struct {
+    // Request Types
+
+    type AirtableAttachmentRequest struct {
         URL string `json:"url"`
     }
     
-    type AirtableMediaRecord struct {
-        Attachments []AirtableAttachment `json:"Attachments"`
-    }
-    
-    type AirtableCreateMediaRecord struct {       
-        Id string `json:"id"` 
-        Fields AirtableMediaRecord `json:"fields"`
-    }
-    
-    type AirtableCreateMediaRecordRequest struct {
-        Records []AirtableCreateMediaRecord `json:"records"`
+    type AirtableMediaRecordRequest struct {
+        Attachments []AirtableAttachmentRequest `json:"Attachments"`
     }
 
-    mediaRecord := AirtableCreateMediaRecordRequest{
-		Records: []AirtableCreateMediaRecord{
+    type AirtableCreateMediaRequest struct {               
+        Fields AirtableMediaRecordRequest `json:"fields"`
+    }
+
+    type AirtableCreateMediaRecordRequest struct {
+        Records []AirtableCreateMediaRequest `json:"records"`
+    }
+
+    
+    createRequest := AirtableCreateMediaRecordRequest{
+		Records: []AirtableCreateMediaRequest{
 			{				
-				Fields: AirtableMediaRecord{
-					Attachments: []AirtableAttachment{
+				Fields: AirtableMediaRecordRequest{
+					Attachments: []AirtableAttachmentRequest{
 						{
 							URL: s3URL,
 						},
@@ -177,7 +181,7 @@ func createAirtableMediaRecord(s3URL string) string {
         
 
     path := fmt.Sprintf("%s/%s/%s", os.Getenv("AIRTABLE_API_URL"), os.Getenv("AIRTABLE_BASE"), "Media")
-    mediaRecordObj, requestParseError := json.Marshal(mediaRecord)   
+    mediaRecordObj, requestParseError := json.Marshal(createRequest)   
 
 
     if requestParseError != nil {        
@@ -198,9 +202,30 @@ func createAirtableMediaRecord(s3URL string) string {
 		log.Fatalf(responseError.Error())
 	}    
 
-    type AirtableCreateMediaRecordResponse struct {
-        Records []AirtableCreateMediaRecord `json:"records"`
+     // Response Types
+
+     type AirtableAttachmentResponse struct {
+        URL string `json:"url"`
+        Id string `json:"id"`
+        FileName string `json:"filename"`
     }
+
+    type AirtableMediaRecordResponse struct {
+        Id int `json:"Id"`
+        Attachments []AirtableAttachmentResponse `json:"Attachments"`
+    }
+
+    type AirtableCreateMediaResponse struct {               
+        Fields AirtableMediaRecordResponse `json:"fields"`
+        Id string `json:"id"`
+        CreatedTime string `json:"createdTime"`
+    }
+
+    type AirtableCreateMediaRecordResponse struct {
+        Records []AirtableCreateMediaResponse `json:"records"`
+    }
+
+   
 	var airtableCreateMediaRecordResponse AirtableCreateMediaRecordResponse
     
     responseParseError := json.NewDecoder(response.Body).Decode(&airtableCreateMediaRecordResponse)    
@@ -210,41 +235,60 @@ func createAirtableMediaRecord(s3URL string) string {
     }
     
     defer response.Body.Close()
+
+    id := airtableCreateMediaRecordResponse.Records[0].Id
         
-    return airtableCreateMediaRecordResponse.Records[0].Id
+     fmt.Printf("Created Airtable record with id: %s", id)
+     return id
 }
 
-func updateAirtableListingRecord(mediaRecordId string, recordId string)  {
-    
+func updateAirtableListingRecord(mediaRecordId string, recordId string)  {    
+   // Request Types
+    type AirtableListingRecordRequest struct {
+        Image []string `json:"Image"`
+    }
 
-    var listingRecord = []byte(fmt.Sprintf(`{
-        "records": [         
-          {
-            "id": "%s",
-            "fields": {              
-              "Image": [
-                "%s"
-              ]             
-            }
-          }
-        ]
-      }'`, recordId, mediaRecordId))
+    type AirtableUpdateListingRequest struct {               
+        Id string `json:"id"`
+        Fields AirtableListingRecordRequest `json:"fields"`
+    }
+
+    type AirtableUpdateListingRecordRequest struct {
+        Records []AirtableUpdateListingRequest `json:"records"`
+    }
+
+    updateRequest := AirtableUpdateListingRecordRequest{
+		Records: []AirtableUpdateListingRequest{
+			{				
+                Id: recordId,
+				Fields: AirtableListingRecordRequest{
+					Image: []string{mediaRecordId},
+					},					
+				},
+			},
+		}	
 
     path := fmt.Sprintf("%s/%s/%s", os.Getenv("AIRTABLE_API_URL"), os.Getenv("AIRTABLE_BASE"), "Listing")     
-    request, requestError := http.NewRequest("PATCH", path, bytes.NewBuffer(listingRecord))
-    if requestError != nil {
+    listingUpdateObj, requestParseError := json.Marshal(updateRequest)   
+
+    if requestParseError != nil {        
+		log.Fatalf(requestParseError.Error())
+	}
+    request, requestError := http.NewRequest("PATCH", path, bytes.NewBuffer(listingUpdateObj))
+    
+	if requestError != nil {        
 		log.Fatalf(requestError.Error())
 	}
-
+  
 	request.Header.Set("Content-Type", "application/json; charset=UTF-8")
     request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", os.Getenv("AIRTABLE_API_KEY")))
 
 	client := &http.Client{}
 	response, err := client.Do(request)
+
+    fmt.Printf(response.Status)
 	if err != nil {
 		log.Fatalf(err.Error())
-	}
-	
-    defer response.Body.Close()
-    
+	}	
+    defer response.Body.Close()    
 }
