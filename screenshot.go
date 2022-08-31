@@ -65,7 +65,7 @@ func generateScreenshotUrl(websiteUrl string) string {
     return result_img_url  
 }
 
-func downloadScreenshot(screenshotUrl string) *os.File {
+func downloadScreenshot(screenshotUrl string) string {
     response, e := http.Get(screenshotUrl)
     if e != nil {
         log.Fatal(e)
@@ -82,7 +82,7 @@ func downloadScreenshot(screenshotUrl string) *os.File {
     if err != nil {
         log.Fatal(err)
     }
-    return file
+    return file.Name()
 }
 
 // S3PutObjectAPI defines the interface for the PutObject function.
@@ -105,30 +105,37 @@ func PutFile(c context.Context, api S3PutObjectAPI, input *s3.PutObjectInput) (*
 }
 
 
-func uploadToS3(file *os.File) string {
+func uploadToS3(filename string) string {
     cfg, err := config.LoadDefaultConfig(context.TODO())
     if err != nil {
         log.Fatalf("Failed to load S3 configuration, %v", err)
     }
 
+    stat, err := os.Stat(filename)    
+    if err != nil {
+       fmt.Printf("Failed to get file size, %v", err)
+    }
+    filesize := stat.Size()
 
-    bucket := os.Getenv("AWS_S3_BUCKET")
-	filename := file.Name()
+    fmt.Printf("The file is %d bytes long", filesize)
+
+    bucket := os.Getenv("AWS_S3_BUCKET")	
 
     client := s3.NewFromConfig(cfg)
+
+    file, err := os.Open(filename)
+
+	if err != nil {
+		panic("Couldn't open local file")
+	}
 
     input := &s3.PutObjectInput{
 		Bucket: &bucket,
 		Key:    &filename,
-		Body:   file,        
+		Body:   file,      
+        ContentLength: filesize,  
 	}
 
-    fi, err := file.Stat()
-    if err != nil {
-        fmt.Printf("Failed to get file size, %v", err)
-    }
-
-    fmt.Printf("The file is %d bytes long", fi.Size())
 
 	_, err = PutFile(context.TODO(), client, input)
 	if err != nil {
