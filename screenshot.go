@@ -117,7 +117,7 @@ func uploadToS3(filename string) string {
     }
     filesize := stat.Size()
 
-    fmt.Printf("The file is %d bytes long", filesize)
+    fmt.Printf("The file is %d bytes long\n", filesize)
 
     bucket := os.Getenv("AWS_S3_BUCKET")	
 
@@ -146,7 +146,7 @@ func uploadToS3(filename string) string {
 
     defer os.Remove(file.Name()) // clean up
 
-    fmt.Printf("File %s uploaded to S3 bucket %s\n with URL %s", filename, bucket, url)
+    fmt.Printf("File %s uploaded to S3 bucket %s\n with URL %s\n", filename, bucket, url)
 
     return url
 }
@@ -161,6 +161,7 @@ func createAirtableMediaRecord(s3URL string) string {
     
     type AirtableMediaRecordRequest struct {
         Attachments []AirtableAttachmentRequest `json:"Attachments"`
+        URL string `json:"URL"`
     }
 
     type AirtableCreateMediaRequest struct {               
@@ -180,7 +181,8 @@ func createAirtableMediaRecord(s3URL string) string {
 						{
 							URL: s3URL,
 						},
-					},					
+					},	
+                    URL: s3URL,
 				},
 			},
 		},
