@@ -12,19 +12,14 @@ import (
 	"os"
 
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/joho/godotenv"
+	"github.com/aws/aws-sdk-go-v2/service/s3"	
 )
 
 
-func main() {	
-    err := godotenv.Load()
-    if err != nil {
-        log.Fatal("Error loading .env file")
-    }       
+func main() {	         
 	http.HandleFunc("/screenshot", handleNewScreenshot)    
-    http.HandleFunc("/", handleIndex)      
-    log.Fatal(http.ListenAndServe(":8000", nil))	
+  http.HandleFunc("/", handleIndex)      
+  log.Fatal(http.ListenAndServe(":8000", nil))	
 }
 
 func handleIndex(w http.ResponseWriter, r *http.Request)  {
