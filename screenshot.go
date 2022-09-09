@@ -22,8 +22,13 @@ func main() {
     if err != nil {
         log.Fatal("Error loading .env file")
     }       
-	http.HandleFunc("/screenshot", handleNewScreenshot)      
-    log.Fatal(http.ListenAndServe(":6000", nil))	
+	http.HandleFunc("/screenshot", handleNewScreenshot)    
+    http.HandleFunc("/", handleIndex)      
+    log.Fatal(http.ListenAndServe(":8000", nil))	
+}
+
+func handleIndex(w http.ResponseWriter, r *http.Request)  {
+    fmt.Fprintf(w, "Hello World")
 }
 
 
