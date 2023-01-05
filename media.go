@@ -13,17 +13,13 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/joho/godotenv"
 )
 
 
-func main() {	
-    err := godotenv.Load()
-    if err != nil {
-        log.Fatal("Error loading .env file")
-    }       
-	http.HandleFunc("/screenshot", handleNewScreenshot)   
-    http.HandleFunc("/attachment", handleNewAttachment) 
+	
+func main() {	         
+    http.HandleFunc("/screenshot", handleNewScreenshot)   
+    http.HandleFunc("/attachment", handleNewAttachment)  
     http.HandleFunc("/", handleIndex)      
     log.Fatal(http.ListenAndServe(":8000", nil))	
 }
@@ -184,8 +180,8 @@ func createAirtableMediaRecord(s3URL string) string {
     }
     
     type AirtableMediaRecordRequest struct {
-        Attachments []AirtableAttachmentRequest `json:"Attachments"`
-        URL string `json:"URL"`
+        File []AirtableAttachmentRequest `json:"File"`
+        Link string `json:"Link"`
     }
 
     type AirtableCreateMediaRequest struct {               
@@ -201,12 +197,12 @@ func createAirtableMediaRecord(s3URL string) string {
 		Records: []AirtableCreateMediaRequest{
 			{				
 				Fields: AirtableMediaRecordRequest{
-					Attachments: []AirtableAttachmentRequest{
+					File: []AirtableAttachmentRequest{
 						{
 							URL: s3URL,
 						},
 					},	
-                    URL: s3URL,
+                    Link: s3URL,
 				},
 			},
 		},
@@ -245,7 +241,7 @@ func createAirtableMediaRecord(s3URL string) string {
 
     type AirtableMediaRecordResponse struct {
         Id int `json:"Id"`
-        Attachments []AirtableAttachmentResponse `json:"Attachments"`
+        File []AirtableAttachmentResponse `json:"File"`
     }
 
     type AirtableCreateMediaResponse struct {               
@@ -278,7 +274,7 @@ func createAirtableMediaRecord(s3URL string) string {
 func updateAirtableListingRecord(mediaRecordId string, recordId string)  {    
    // Request Types
     type AirtableListingRecordRequest struct {
-        Image []string `json:"Image"`
+        Images []string `json:"Images"`
     }
 
     type AirtableUpdateListingRequest struct {               
@@ -295,13 +291,13 @@ func updateAirtableListingRecord(mediaRecordId string, recordId string)  {
 			{				
                 Id: recordId,
 				Fields: AirtableListingRecordRequest{
-					Image: []string{mediaRecordId},
+					Images: []string{mediaRecordId},
 					},					
 				},
 			},
 		}	
 
-    path := fmt.Sprintf("%s/%s/%s", os.Getenv("AIRTABLE_API_URL"), os.Getenv("AIRTABLE_BASE"), "Listing")     
+    path := fmt.Sprintf("%s/%s/%s", os.Getenv("AIRTABLE_API_URL"), os.Getenv("AIRTABLE_BASE"), "Listings")     
     listingUpdateObj, requestParseError := json.Marshal(updateRequest)   
 
     if requestParseError != nil {        
