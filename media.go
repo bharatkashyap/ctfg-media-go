@@ -70,7 +70,7 @@ func handleNewAttachment(w http.ResponseWriter, r *http.Request) {
         return
     }
     
-    updateAirtableMediaRecord(attachmentRequest.Id, uploadToS3(downloadFile(attachmentRequest.DownloadUrl, "attachments")))
+    updateAirtableListingRecord(createAirtableMediaRecord(uploadToS3(downloadFile(attachmentRequest.DownloadUrl, "attachments"))), attachmentRequest.Id)
 }
 
 func generateScreenshotUrl(websiteUrl string) string {
