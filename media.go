@@ -284,7 +284,7 @@ func createAirtableMediaRecord(s3URLs []string, listingRecordId string) []string
             }
 	
             request.Header.Set("Content-Type", "application/json")
-            request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", os.Getenv("AIRTABLE_API_KEY")))
+            request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", os.Getenv("AIRTABLE_TOKEN")))
 
 	
 	        response, responseError := client.Do(request)
