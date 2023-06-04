@@ -10,6 +10,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -36,8 +38,6 @@ func handleIndex(w http.ResponseWriter, r *http.Request)  {
     fmt.Fprintf(w, "Hello World")
 }
 
-
-
 func handleNewScreenshot(w http.ResponseWriter, r *http.Request)  {
 	   
     type ScreenshotRequest struct {
@@ -57,14 +57,12 @@ func handleNewScreenshot(w http.ResponseWriter, r *http.Request)  {
     updateAirtableListingRecord(
         createAirtableMediaRecord(
             uploadToS3(
-                downloadFile(
+                downloadFiles(
                     generateScreenshotUrl(screenshotRequest.Url), "screenshots")), screenshotRequest.Id), 
-    screenshotRequest.Id)
-               
+    screenshotRequest.Id)              
 }
 
 func handleNewAttachment(w http.ResponseWriter, r *http.Request) {    
-
     type AttachmentRequest struct {
         Id string `json:"id"`
         DownloadUrl string  `json:"downloadUrl"`
@@ -76,9 +74,8 @@ func handleNewAttachment(w http.ResponseWriter, r *http.Request) {
     if err != nil {
         http.Error(w, err.Error(), http.StatusBadRequest)
         return
-    }
-    
-    updateAirtableListingRecord(createAirtableMediaRecord(uploadToS3(downloadFile(attachmentRequest.DownloadUrl, "attachments")), attachmentRequest.Id), attachmentRequest.Id)
+    }    
+    updateAirtableListingRecord(createAirtableMediaRecord(uploadToS3(downloadFiles(attachmentRequest.DownloadUrl, "screenshots")), attachmentRequest.Id), attachmentRequest.Id)
 }
 
 func generateScreenshotUrl(websiteUrl string) string {
@@ -93,24 +90,49 @@ func generateScreenshotUrl(websiteUrl string) string {
     return result_img_url  
 }
 
-func downloadFile(fileUrl string, directory string) string {
-    response, e := http.Get(fileUrl)
-    if e != nil {
-        log.Fatal(e)
-    }
-    defer response.Body.Close()
-
+func downloadFiles(fileUrl string, directory string) []string {
     os.Mkdir(directory, 0755)
+    // fileUrl could be a string containing multiple urls,
+    // so we need to extract each and download them individually
+    urlList := strings.Split(fileUrl, ",")
+    downloadedFiles := make([]string, 0)
 
-    file, err := os.CreateTemp(directory, "*.jpg")
-    if err != nil {
-        log.Fatal(err)
-    }    
-    _, err = io.Copy(file, response.Body)
-    if err != nil {
-        log.Fatal(err)
-    }
-    return file.Name()
+    // use goroutines and channels to download files concurrently    
+    filesChan := make(chan string)
+    var wg sync.WaitGroup
+    wg.Add(len(urlList))
+
+    for index, url := range urlList {
+        go func(index int, url string) {
+            defer wg.Done()
+            response, e := http.Get(url)
+            if e != nil {
+                log.Fatal(e)
+            }
+            defer response.Body.Close()
+            file, err := os.CreateTemp(directory, "*.jpg")
+            if err != nil {
+                log.Fatal(err)
+            }    
+            _, err = io.Copy(file, response.Body)
+            if err != nil {
+                log.Fatal(err)
+            }
+            fmt.Printf("Downloaded %s\n", file.Name())
+            filesChan <- file.Name()
+        }(index, strings.TrimSpace(url))
+        }
+
+        go func() {
+            wg.Wait()
+            close(filesChan)
+        }()
+
+        for file := range filesChan {
+            downloadedFiles = append(downloadedFiles, file)
+        }
+
+        return downloadedFiles
 }
 
 // S3PutObjectAPI defines the interface for the PutObject function.
@@ -133,53 +155,73 @@ func PutFile(c context.Context, api S3PutObjectAPI, input *s3.PutObjectInput) (*
 }
 
 
-func uploadToS3(filename string) string {
+func uploadToS3(filenames []string) []string {
     cfg, err := config.LoadDefaultConfig(context.TODO())
     if err != nil {
         log.Fatalf("Failed to load S3 configuration, %v", err)
     }
 
-    stat, err := os.Stat(filename)    
-    if err != nil {
-       fmt.Printf("Failed to get file size, %v", err)
-    }
-    filesize := stat.Size()
-
-    fmt.Printf("The file is %d bytes long\n", filesize)
-
     bucket := os.Getenv("AWS_S3_BUCKET")	
-
     client := s3.NewFromConfig(cfg)
 
-    file, err := os.Open(filename)
+    uploadedURLs := make([]string, 0)
+    urlsChan := make(chan string)
 
-	if err != nil {
-		panic("Couldn't open local file")
-	}
+    var wg sync.WaitGroup
+    wg.Add(len(filenames))
 
-    input := &s3.PutObjectInput{
-		Bucket: &bucket,
-		Key:    &filename,
-		Body:   file,      
-        ContentLength: filesize,  
-	}
+    for index, filename := range filenames {
+        go func(index int, filename string) {
+            defer wg.Done()
+            stat, err := os.Stat(filename)    
+            if err != nil {
+            fmt.Printf("Failed to get file size, %v", err)
+            }
+            filesize := stat.Size()
 
+            fmt.Printf("The file is %d bytes long\n", filesize)
 
-	_, err = PutFile(context.TODO(), client, input)
-	if err != nil {
-		log.Fatalf(err.Error())
-	}
+            file, err := os.Open(filename)
 
-    url:= fmt.Sprintf("https://s3.%s.amazonaws.com/%s/%s", os.Getenv("AWS_REGION"), bucket, filename)
+            if err != nil {
+                panic("Couldn't open local file")
+            }
 
-    defer os.Remove(file.Name()) // clean up
+            input := &s3.PutObjectInput{
+                Bucket: &bucket,
+                Key:    &filename,
+                Body:   file,      
+                ContentLength: filesize,  
+            }
 
-    fmt.Printf("File %s uploaded to S3 bucket %s\n with URL %s\n", filename, bucket, url)
+            _, err = PutFile(context.TODO(), client, input)
+            if err != nil {
+                log.Fatalf(err.Error())
+            }
 
-    return url
+            url:= fmt.Sprintf("https://s3.%s.amazonaws.com/%s/%s", os.Getenv("AWS_REGION"), bucket, filename)
+
+            defer os.Remove(file.Name()) // clean up
+
+            fmt.Printf("File %s uploaded to S3 bucket %s\n with URL %s\n", filename, bucket, url)
+
+            urlsChan <- url
+        }(index, filename)
+        }
+
+        go func ()  {
+            wg.Wait()
+            close(urlsChan)
+        }()
+
+        for url := range urlsChan {
+            uploadedURLs = append(uploadedURLs, url)
+        }
+
+        return uploadedURLs      
 }
 
-func createAirtableMediaRecord(s3URL string, listingRecordId string) string {
+func createAirtableMediaRecord(s3URLs []string, listingRecordId string) []string {
 
     // Request Types
 
@@ -201,189 +243,225 @@ func createAirtableMediaRecord(s3URL string, listingRecordId string) string {
         Records []AirtableCreateMediaRequest `json:"records"`
     }
 
-    
-    createRequest := AirtableCreateMediaRecordRequest{
-		Records: []AirtableCreateMediaRequest{
-			{				
-				Fields: AirtableMediaRecordRequest{
-					File: []AirtableAttachmentRequest{
-						{
-							URL: s3URL,
-						},
-					},	
-                    Link: s3URL,
-                    Listings: []string{listingRecordId},
-				},
-			},
-		},
-	}    
+    createdRecords := make([]string, 0)
+    createdRecordsChan := make(chan string)
+
+    var wg sync.WaitGroup
+    wg.Add(len(s3URLs))
+
+    client := &http.Client{}
+
+    for index, s3URL := range s3URLs {
+        go func(index int, s3URL string) { 
+            defer wg.Done()   
+            createRequest := AirtableCreateMediaRecordRequest{
+                Records: []AirtableCreateMediaRequest{
+                    {				
+                        Fields: AirtableMediaRecordRequest{
+                            File: []AirtableAttachmentRequest{
+                                {
+                                    URL: s3URL,
+                                },
+                            },	
+                            Link: s3URL,
+                            Listings: []string{listingRecordId},
+                        },
+                    },
+                },
+            }    
         
-    path := fmt.Sprintf("%s/%s/%s", os.Getenv("AIRTABLE_API_URL"), os.Getenv("AIRTABLE_BASE"), "Media")
-    mediaRecordObj, requestParseError := json.Marshal(createRequest)   
+            path := fmt.Sprintf("%s/%s/%s", os.Getenv("AIRTABLE_API_URL"), os.Getenv("AIRTABLE_BASE"), "Media")
+            mediaRecordObj, requestParseError := json.Marshal(createRequest)   
 
 
-    if requestParseError != nil {        
-		log.Fatalf(requestParseError.Error())
-	}
-    request, requestError := http.NewRequest("POST", path, bytes.NewBuffer(mediaRecordObj))
+            if requestParseError != nil {        
+                log.Fatalf(requestParseError.Error())
+            }
+            request, requestError := http.NewRequest("POST", path, bytes.NewBuffer(mediaRecordObj))
     
-	if requestError != nil {        
-		log.Fatalf(requestError.Error())
-	}
+            if requestError != nil {        
+                log.Fatalf(requestError.Error())
+            }
 	
-    request.Header.Set("Content-Type", "application/json")
-    request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", os.Getenv("AIRTABLE_API_KEY")))
+            request.Header.Set("Content-Type", "application/json")
+            request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", os.Getenv("AIRTABLE_API_KEY")))
 
-	client := &http.Client{}
-	response, responseError := client.Do(request)
-	if responseError != nil {
-		log.Fatalf(responseError.Error())
-	}    
+	
+	        response, responseError := client.Do(request)
+	        if responseError != nil {
+		        log.Fatalf(responseError.Error())
+	        }    
 
-    fmt.Println(response.Body)
+            fmt.Println(response.Body)
 
-     // Response Types
+            // Response Types
 
-     type AirtableAttachmentResponse struct {
-        URL string `json:"url"`
-        Id string `json:"id"`
-        FileName string `json:"filename"`
-    }
+            type AirtableAttachmentResponse struct {
+                URL string `json:"url"`
+                Id string `json:"id"`
+                FileName string `json:"filename"`
+            }
 
-    type AirtableMediaRecordResponse struct {
-        Id int `json:"Id"`
-        Listings []string `json:"Listings"`
-        Link string `json:"Link"`
-        File []AirtableAttachmentResponse `json:"File"`
-    }
+            type AirtableMediaRecordResponse struct {
+                Id int `json:"Id"`
+                Listings []string `json:"Listings"`
+                Link string `json:"Link"`
+                File []AirtableAttachmentResponse `json:"File"`
+            }
 
-    type AirtableCreateMediaResponse struct {               
-        Fields AirtableMediaRecordResponse `json:"fields"`
-        Id string `json:"id"`
-        CreatedTime string `json:"createdTime"`
-    }
+            type AirtableCreateMediaResponse struct {               
+                Fields AirtableMediaRecordResponse `json:"fields"`
+                Id string `json:"id"`
+                CreatedTime string `json:"createdTime"`
+            }
 
-    type AirtableCreateMediaRecordResponse struct {
-        Records []AirtableCreateMediaResponse `json:"records"`
-    }
+            type AirtableCreateMediaRecordResponse struct {
+                Records []AirtableCreateMediaResponse `json:"records"`
+            }
 
    
-	var airtableCreateMediaRecordResponse AirtableCreateMediaRecordResponse
+	        var airtableCreateMediaRecordResponse AirtableCreateMediaRecordResponse
     
-    responseParseError := json.NewDecoder(response.Body).Decode(&airtableCreateMediaRecordResponse)    
+            responseParseError := json.NewDecoder(response.Body).Decode(&airtableCreateMediaRecordResponse)    
 
-    if responseParseError != nil {            
-        log.Fatalf(responseParseError.Error())        
-    }
+            if responseParseError != nil {            
+                log.Fatalf(responseParseError.Error())        
+            }
     
-    defer response.Body.Close()
+            defer response.Body.Close()
     
-    id := airtableCreateMediaRecordResponse.Records[0].Id
+            id := airtableCreateMediaRecordResponse.Records[0].Id
         
-     fmt.Printf("Created Airtable record with id: %s", id)
-     return id
+            fmt.Printf("Created Airtable record with id: %s", id)
+            
+            createdRecordsChan <- id
+        }(index, s3URL)
+    }
+
+    go func ()  {
+        wg.Wait()
+        close(createdRecordsChan)
+    }()
+
+    for id := range createdRecordsChan {
+        createdRecords = append(createdRecords, id)
+    }
+
+    return createdRecords
 }
 
-func updateAirtableListingRecord(mediaRecordId string, recordId string)  {    
-   // Request Types
-    type AirtableListingRecordRequest struct {
-        Images []string `json:"Images"`
+func updateAirtableListingRecord(mediaRecords []string, recordId string)  {    
+    var wg sync.WaitGroup
+    wg.Add(len(mediaRecords))
+
+    client := &http.Client{}
+
+    for index, mediaRecordId := range mediaRecords {
+        go func(index int, mediaRecordId string) {
+            defer wg.Done()
+            // Request Types
+            type AirtableListingRecordRequest struct {
+                Images []string `json:"Images"`
+            }
+
+            type AirtableUpdateListingRequest struct {               
+                Id string `json:"id"`
+                Fields AirtableListingRecordRequest `json:"fields"`
+            }
+
+            type AirtableUpdateListingRecordRequest struct {
+                Records []AirtableUpdateListingRequest `json:"records"`
+            }
+
+            updateRequest := AirtableUpdateListingRecordRequest{
+                Records: []AirtableUpdateListingRequest{
+                    {				
+                        Id: recordId,
+                        Fields: AirtableListingRecordRequest{
+                            Images: []string{mediaRecordId},
+                            },					
+                        },
+                    },
+                }	
+
+            path := fmt.Sprintf("%s/%s/%s", os.Getenv("AIRTABLE_API_URL"), os.Getenv("AIRTABLE_BASE"), "Listings")     
+            listingUpdateObj, requestParseError := json.Marshal(updateRequest)   
+
+            if requestParseError != nil {        
+                log.Fatalf(requestParseError.Error())
+            }
+            request, requestError := http.NewRequest("PATCH", path, bytes.NewBuffer(listingUpdateObj))
+            
+            if requestError != nil {        
+                log.Fatalf(requestError.Error())
+            }
+        
+            request.Header.Set("Content-Type", "application/json; charset=UTF-8")
+            request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", os.Getenv("AIRTABLE_API_KEY")))
+
+            
+            response, err := client.Do(request)
+
+            fmt.Printf(response.Status)
+            if err != nil {
+                log.Fatalf(err.Error())
+            }	
+            defer response.Body.Close()    
+        }(index, mediaRecordId)
     }
 
-    type AirtableUpdateListingRequest struct {               
-        Id string `json:"id"`
-        Fields AirtableListingRecordRequest `json:"fields"`
-    }
+    wg.Wait() 
 
-    type AirtableUpdateListingRecordRequest struct {
-        Records []AirtableUpdateListingRequest `json:"records"`
-    }
-
-    updateRequest := AirtableUpdateListingRecordRequest{
-		Records: []AirtableUpdateListingRequest{
-			{				
-                Id: recordId,
-				Fields: AirtableListingRecordRequest{
-					Images: []string{mediaRecordId},
-					},					
-				},
-			},
-		}	
-
-    path := fmt.Sprintf("%s/%s/%s", os.Getenv("AIRTABLE_API_URL"), os.Getenv("AIRTABLE_BASE"), "Listings")     
-    listingUpdateObj, requestParseError := json.Marshal(updateRequest)   
-
-    if requestParseError != nil {        
-		log.Fatalf(requestParseError.Error())
-	}
-    request, requestError := http.NewRequest("PATCH", path, bytes.NewBuffer(listingUpdateObj))
-    
-	if requestError != nil {        
-		log.Fatalf(requestError.Error())
-	}
-  
-	request.Header.Set("Content-Type", "application/json; charset=UTF-8")
-    request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", os.Getenv("AIRTABLE_API_KEY")))
-
-	client := &http.Client{}
-	response, err := client.Do(request)
-
-    fmt.Printf(response.Status)
-	if err != nil {
-		log.Fatalf(err.Error())
-	}	
-    defer response.Body.Close()    
 }
 
-func updateAirtableMediaRecord(recordId string, s3Url string) {
-    // Request Types
+// func updateAirtableMediaRecord(recordId string, s3Url string) {
+//     // Request Types
    
-    type AirtableMediaRecordRequest struct {        
-        Link string `json:"Link"`
-    }
+//     type AirtableMediaRecordRequest struct {        
+//         Link string `json:"Link"`
+//     }
 
-    type AirtableUpdateMediaRequest struct {      
-        Id string `json:"id"`         
-        Fields AirtableMediaRecordRequest `json:"fields"`
-    }
+//     type AirtableUpdateMediaRequest struct {      
+//         Id string `json:"id"`         
+//         Fields AirtableMediaRecordRequest `json:"fields"`
+//     }
 
-    type AirtableUpdateMediaRecordRequest struct {
-        Records []AirtableUpdateMediaRequest `json:"records"`
-    }
+//     type AirtableUpdateMediaRecordRequest struct {
+//         Records []AirtableUpdateMediaRequest `json:"records"`
+//     }
 
-    updateRequest := AirtableUpdateMediaRecordRequest{
-		Records: []AirtableUpdateMediaRequest{
-			{				
-                Id: recordId,
-				Fields: AirtableMediaRecordRequest{
-					Link: s3Url,
-					},					
-				},
-			},
-		}	
+//     updateRequest := AirtableUpdateMediaRecordRequest{
+// 		Records: []AirtableUpdateMediaRequest{
+// 			{				
+//                 Id: recordId,
+// 				Fields: AirtableMediaRecordRequest{
+// 					Link: s3Url,
+// 					},					
+// 				},
+// 			},
+// 		}	
     
-    path := fmt.Sprintf("%s/%s/%s", os.Getenv("AIRTABLE_API_URL"), os.Getenv("AIRTABLE_BASE"), "Media")     
-    listingUpdateObj, requestParseError := json.Marshal(updateRequest)   
+//     path := fmt.Sprintf("%s/%s/%s", os.Getenv("AIRTABLE_API_URL"), os.Getenv("AIRTABLE_BASE"), "Media")     
+//     listingUpdateObj, requestParseError := json.Marshal(updateRequest)   
 
-    if requestParseError != nil {        
-		log.Fatalf(requestParseError.Error())
-	}
-    request, requestError := http.NewRequest("PATCH", path, bytes.NewBuffer(listingUpdateObj))
+//     if requestParseError != nil {        
+// 		log.Fatalf(requestParseError.Error())
+// 	}
+//     request, requestError := http.NewRequest("PATCH", path, bytes.NewBuffer(listingUpdateObj))
     
-	if requestError != nil {        
-		log.Fatalf(requestError.Error())
-	}
+// 	if requestError != nil {        
+// 		log.Fatalf(requestError.Error())
+// 	}
   
-	request.Header.Set("Content-Type", "application/json; charset=UTF-8")
-    request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", os.Getenv("AIRTABLE_API_KEY")))
+// 	request.Header.Set("Content-Type", "application/json; charset=UTF-8")
+//     request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", os.Getenv("AIRTABLE_API_KEY")))
 
-	client := &http.Client{}
-	response, err := client.Do(request)
+// 	client := &http.Client{}
+// 	response, err := client.Do(request)
 
-    fmt.Printf(response.Status)
-	if err != nil {
-		log.Fatalf(err.Error())
-	}	
-    defer response.Body.Close()    
-    
-}
+//     fmt.Printf(response.Status)
+// 	if err != nil {
+// 		log.Fatalf(err.Error())
+// 	}	
+//     defer response.Body.Close()    
+// }
