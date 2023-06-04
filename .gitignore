@@ -2,3 +2,5 @@
 ./static/*
 .aws
 screenshots
+.replit
+main
