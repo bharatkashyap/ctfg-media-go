@@ -13,6 +13,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/joho/godotenv"
 )
 
 
@@ -21,7 +22,14 @@ func main() {
     http.HandleFunc("/screenshot", handleNewScreenshot)   
     http.HandleFunc("/attachment", handleNewAttachment)  
     http.HandleFunc("/", handleIndex)      
-    log.Fatal(http.ListenAndServe(":8000", nil))	
+    if(os.Getenv("APP_ENV") == "development")  {
+        // Load .env file
+        err := godotenv.Load()
+        if err != nil {
+            log.Fatal("Error loading .env file")
+        }       
+    }
+    log.Fatal(http.ListenAndServe(":8000", nil))        
 }
 
 func handleIndex(w http.ResponseWriter, r *http.Request)  {
@@ -50,7 +58,7 @@ func handleNewScreenshot(w http.ResponseWriter, r *http.Request)  {
         createAirtableMediaRecord(
             uploadToS3(
                 downloadFile(
-                    generateScreenshotUrl(screenshotRequest.Url), "screenshots"))), 
+                    generateScreenshotUrl(screenshotRequest.Url), "screenshots")), screenshotRequest.Id), 
     screenshotRequest.Id)
                
 }
@@ -70,7 +78,7 @@ func handleNewAttachment(w http.ResponseWriter, r *http.Request) {
         return
     }
     
-    updateAirtableListingRecord(createAirtableMediaRecord(uploadToS3(downloadFile(attachmentRequest.DownloadUrl, "attachments"))), attachmentRequest.Id)
+    updateAirtableListingRecord(createAirtableMediaRecord(uploadToS3(downloadFile(attachmentRequest.DownloadUrl, "attachments")), attachmentRequest.Id), attachmentRequest.Id)
 }
 
 func generateScreenshotUrl(websiteUrl string) string {
@@ -171,7 +179,7 @@ func uploadToS3(filename string) string {
     return url
 }
 
-func createAirtableMediaRecord(s3URL string) string {
+func createAirtableMediaRecord(s3URL string, listingRecordId string) string {
 
     // Request Types
 
@@ -182,6 +190,7 @@ func createAirtableMediaRecord(s3URL string) string {
     type AirtableMediaRecordRequest struct {
         File []AirtableAttachmentRequest `json:"File"`
         Link string `json:"Link"`
+        Listings []string `json:"Listings"`
     }
 
     type AirtableCreateMediaRequest struct {               
@@ -203,12 +212,12 @@ func createAirtableMediaRecord(s3URL string) string {
 						},
 					},	
                     Link: s3URL,
+                    Listings: []string{listingRecordId},
 				},
 			},
 		},
-	}
+	}    
         
-
     path := fmt.Sprintf("%s/%s/%s", os.Getenv("AIRTABLE_API_URL"), os.Getenv("AIRTABLE_BASE"), "Media")
     mediaRecordObj, requestParseError := json.Marshal(createRequest)   
 
@@ -231,6 +240,8 @@ func createAirtableMediaRecord(s3URL string) string {
 		log.Fatalf(responseError.Error())
 	}    
 
+    fmt.Println(response.Body)
+
      // Response Types
 
      type AirtableAttachmentResponse struct {
@@ -241,6 +252,8 @@ func createAirtableMediaRecord(s3URL string) string {
 
     type AirtableMediaRecordResponse struct {
         Id int `json:"Id"`
+        Listings []string `json:"Listings"`
+        Link string `json:"Link"`
         File []AirtableAttachmentResponse `json:"File"`
     }
 
@@ -264,7 +277,7 @@ func createAirtableMediaRecord(s3URL string) string {
     }
     
     defer response.Body.Close()
-
+    
     id := airtableCreateMediaRecordResponse.Records[0].Id
         
      fmt.Printf("Created Airtable record with id: %s", id)
